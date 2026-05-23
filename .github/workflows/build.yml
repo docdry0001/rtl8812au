@@ -1,63 +1,103 @@
-name: Build
+name: Build Module for OnePlus 11R (Android 16) Kernel
 
-on: [pull_request]
+on:
+  push:
+  pull_request:
 
 jobs:
-
-  commontasks:
+  # 1. Կոդի որակի ստուգում (ձեր օրիգինալ workflow-ից)
+  quality-checks:
     runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-    - uses: actions/checkout@v3
-    - name: Avoid 0x0BDA
-      #Find devices that not use 0x0BDA instead of const USB_VENDOR_ID_REALTEK
-      run: grep -c -i "0x0BDA" os_dep/linux/usb_intf.c | grep -w 1
-    - name: Find duplicates
-      #Find devices that not use 0x0BDA instead of const USB_VENDOR_ID_REALTEK
-      run: grep -i "{USB_DEVICE(" os_dep/linux/usb_intf.c | cut -d ')' -f1 | sort | uniq -cd | wc -c | grep -w 0
-    - name: Get kernel matrix
-      id: set-matrix
-      run: |
-        JSON=$(curl -s https://www.kernel.org/releases.json)
-        VERSIONSARRAY=$(echo $JSON | jq -c '[.releases[] | {version: .version, moniker: .moniker} | select(.moniker != "linux-next") | .version]')
-        echo ::set-output name=matrix::${VERSIONSARRAY}
+      - uses: actions/checkout@v4
 
+      - name: Avoid hardcoded 0x0BDA
+        run: |
+          # Ստուգել, որ usb_intf.c-ում USB_VENDOR_ID_REALTEK-ի փոխարեն ուղղակի 0x0BDA չի օգտագործվում
+          grep -c -i "0x0BDA" os_dep/linux/usb_intf.c | grep -w 1
+
+      - name: Find duplicate USB device entries
+        run: |
+          # Ստուգել, որ կրկնվող USB_DEVICE մակրոսներ չկան
+          grep -i "{USB_DEVICE(" os_dep/linux/usb_intf.c | cut -d ')' -f1 | sort | uniq -cd | wc -c | grep -w 0
+
+  # 2. Մոդուլի կոմպիլյացիա Android միջուկի համար
   build:
-    needs: commontasks
-    strategy:
-      fail-fast: false
-      matrix:
-        version: ${{fromJson(needs.commontasks.outputs.matrix)}}
-        #version: [4.9.248, 4.4.248]
-        include:
-          #Version 4.15.x requested to test Ubuntu 18.04 LTS version
-          - os: ubuntu-18.04
-            version: $(uname -r)
-            use_apt: true
-
     runs-on: ubuntu-22.04
+    needs: quality-checks   # ըստ ցանկության, կարելի է հանել, եթե ստուգումը պարտադիր չէ
+
     steps:
-    - name: install deb packages
-      env:
-        VERSION: ${{matrix.version }}
-      if: ${{ !matrix.use_apt }}
-      run: |
-        KERNEL_URL=https://kernel.ubuntu.com/~kernel-ppa/mainline/
-        KERNEL_URL_DETAILS=$(wget --quiet -O - ${KERNEL_URL}v${VERSION}/ | grep -A8 "Build for amd64\|Test amd64")
-        ALL_DEB=$(echo "$KERNEL_URL_DETAILS" |  grep -m1 'all.deb' | cut -d '"' -f 2)
-        AMD64_DEB=$(echo "$KERNEL_URL_DETAILS" | grep -m1 "amd64.deb" | cut -d '"' -f 2)
-        [  -z "$ALL_DEB" ] && exit 1
-        [  -z "$AMD64_DEB" ] && exit 2
-        wget -nv ${KERNEL_URL}v${VERSION}/$AMD64_DEB
-        wget -nv ${KERNEL_URL}v${VERSION}/$ALL_DEB
-        sudo dpkg --force-all -i *.deb
-        echo "KVER=$(echo $ALL_DEB | cut -d '_' -f 2 | rev | cut -c14- | rev)-generic" >> $GITHUB_ENV
-    - name: apt-linux-headers
-      if: ${{ matrix.use_apt }}
-      run: |
-        sudo apt-get install linux-headers-$(uname -r)
-        echo "KVER=${{matrix.version }}" >> $GITHUB_ENV
-    - uses: actions/checkout@v3
-    - name: build
-      run: make KVER=$KVER
+      - name: Checkout module source
+        uses: actions/checkout@v4
+        with:
+          path: module
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git repo clang lld llvm gcc-aarch64-linux-gnu flex bison libssl-dev bc
+
+      - name: Sync kernel sources (manifest)
+        run: |
+          mkdir -p kernel
+          cd kernel
+          # Մանիֆեստը OnePlus-ի պաշտոնական kernel_manifest-ից
+          repo init -u https://github.com/OnePlusOSS/kernel_manifest \
+                    -b oneplus/sm8475/oneplus_11r_b.xml \
+                    --depth=1
+          # Ներբեռնել միայն անհրաժեշտ պրոյեկտները
+          repo sync -j$(nproc) \
+            kernel_platform/common \
+            kernel_platform/msm-kernel \
+            kernel_platform/prebuilts/kernel-build-tools \
+            kernel_platform/prebuilts-master/clang/host/linux-x86
+
+          # Ստեղծել build.config-ի symlink-ները, ինչպես նշված է մանիֆեստում
+          cd kernel_platform/common
+          ln -sf ../msm-kernel/build.config.msm.waipio build.config.msm.waipio
+          ln -sf ../msm-kernel/build.config.msm.waipio.tuivm build.config.msm.waipio.tuivm
+          ln -sf ../msm-kernel/build.config.msm.lahaina build.config.msm.lahaina
+
+      - name: Prepare kernel build environment
+        run: |
+          cd kernel/kernel_platform/common
+
+          # Օգտագործել clang-ը prebuilts-ից (կամ կարելի է համակարգի clang-ը)
+          export CLANG_PREBUILT_BIN=$(realpath ../prebuilts-master/clang/host/linux-x86/clang-r416183b/bin)
+          export PATH="${CLANG_PREBUILT_BIN}:$PATH"
+
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=clang
+          export LD=ld.lld
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          # Ստեղծել .config (OnePlus 11R-ի համար waipio_defconfig)
+          # Եթե Ձեր միջուկը այլ defconfig է պահանջում, փոխեք անունը
+          make O=out vendor/waipio_defconfig
+
+          # Պատրաստել մոդուլների կոմպիլյացիայի համար (ստեղծում է headers)
+          make O=out modules_prepare
+
+      - name: Build the WiFi module
+        run: |
+          cd $GITHUB_WORKSPACE/module
+
+          export CLANG_PREBUILT_BIN=$(realpath ../kernel/kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin)
+          export PATH="${CLANG_PREBUILT_BIN}:$PATH"
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=clang
+          export LD=ld.lld
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          # Կոմպիլյացիա. KDIR-ը ցույց է տալիս միջուկի out-պանակը
+          make -C $GITHUB_WORKSPACE/kernel/kernel_platform/common/out \
+               M=$(pwd) \
+               modules
+
+      - name: Upload compiled module(s)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wifi-module
+          path: module/*.ko
