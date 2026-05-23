@@ -42,7 +42,7 @@ jobs:
           mkdir -p kernel
           cd kernel
           # Մանիֆեստը OnePlus-ի պաշտոնական kernel_manifest-ից
-          repo init -u https://github.com/OnePlusOSS/kernel_manifest \
+          repo init -u https://github.com/docdry0001/kernel_manifest \
                     -b oneplus/sm8475/oneplus_11r_b.xml \
                     --depth=1
           # Ներբեռնել միայն անհրաժեշտ պրոյեկտները
@@ -74,7 +74,7 @@ jobs:
 
           # Ստեղծել .config (OnePlus 11R-ի համար waipio_defconfig)
           # Եթե Ձեր միջուկը այլ defconfig է պահանջում, փոխեք անունը
-          make O=out vendor/waipio_defconfig
+          make O=out vendor/gki_defconfig
 
           # Պատրաստել մոդուլների կոմպիլյացիայի համար (ստեղծում է headers)
           make O=out modules_prepare
