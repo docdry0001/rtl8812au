@@ -42,7 +42,7 @@ jobs:
           mkdir -p kernel
           cd kernel
           # Մանիֆեստը OnePlus-ի պաշտոնական kernel_manifest-ից
-          repo init -u https://github.com/OnePlusOSS/kernel_manifest/blob/oneplus/sm8475/oneplus_11r_b.xml
+          repo init -u -b oneplus/sm8475 https://github.com/OnePlusOSS/kernel_manifest/oneplus_11r_b.xml
           # Ներբեռնել միայն անհրաժեշտ պրոյեկտները
           repo sync -j$(nproc) \
             kernel_platform/common \
